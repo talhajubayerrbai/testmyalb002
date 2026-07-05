@@ -243,7 +243,7 @@ resource "aws_security_group_rule" "app_ingress_from_alb_http" {
   description              = "HTTP from ALB"
 }
 
-# Allow SSH from anywhere (needed for Ansible via bastion or direct - private subnet only reachable via SSM or bastion)
+# Allow SSH from anywhere (needed for Ansible from GitHub Actions runner)
 resource "aws_security_group_rule" "app_ingress_ssh" {
   type              = "ingress"
   from_port         = 22
@@ -251,7 +251,7 @@ resource "aws_security_group_rule" "app_ingress_ssh" {
   protocol          = "tcp"
   security_group_id = aws_security_group.app_sg.id
   cidr_blocks       = ["0.0.0.0/0"]
-  description       = "SSH for Ansible (via SSH proxy through NAT)"
+  description       = "SSH for Ansible from GitHub Actions runner"
 }
 
 #  EC2 Instance 
@@ -274,8 +274,8 @@ data "aws_ami" "ubuntu" {
 resource "aws_instance" "app" {
   ami                         = data.aws_ami.ubuntu.id
   instance_type               = var.instance_type
-  subnet_id                   = aws_subnet.private_subnet.id
-  associate_public_ip_address = false
+  subnet_id                   = aws_subnet.public_subnet.id
+  associate_public_ip_address = true
   key_name                    = aws_key_pair.app.key_name
   vpc_security_group_ids      = [aws_security_group.app_sg.id]
 
@@ -359,6 +359,11 @@ output "alb_dns_name" {
 output "instance_private_ip" {
   description = "Private IP of the EC2 instance"
   value       = aws_instance.app.private_ip
+}
+
+output "instance_public_ip" {
+  description = "Public IP of the EC2 instance (used by Ansible over SSH)"
+  value       = aws_instance.app.public_ip
 }
 
 output "app_url" {
