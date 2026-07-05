@@ -39,7 +39,6 @@ jobs:
     outputs:
       instance_private_ip: ${{ steps.tf_outputs.outputs.instance_private_ip }}
       instance_public_ip: ${{ steps.tf_outputs.outputs.instance_public_ip }}
-      alb_dns_name_b64: ${{ steps.tf_outputs.outputs.alb_dns_name_b64 }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -78,10 +77,6 @@ jobs:
         run: |
           echo "instance_private_ip=$(terraform output -raw instance_private_ip)" >> "$GITHUB_OUTPUT"
           echo "instance_public_ip=$(terraform output -raw instance_public_ip)" >> "$GITHUB_OUTPUT"
-          # Base64-encode the ALB DNS name so GitHub's secret-masking logic does not
-          # recognise the project-name / region substrings inside it and drop the output.
-          ALB_DNS="$(terraform output -raw alb_dns_name)"
-          echo "alb_dns_name_b64=$(echo -n "$ALB_DNS" | base64 -w 0)" >> "$GITHUB_OUTPUT"
 
   configure:
     name: Configure Application
@@ -137,14 +132,39 @@ jobs:
     runs-on: ubuntu-latest
     needs: [provision, configure]
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Terraform Init
+        working-directory: terraform
+        run: |
+          terraform init -reconfigure \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="region=${{ secrets.AWS_REGION }}" \
+            -backend-config="key=${{ secrets.PROJECT_NAME }}/terraform.tfstate"
+
       - name: Wait for ALB health checks to pass
         run: sleep 60
 
       - name: Verify application endpoint
+        working-directory: terraform
         run: |
-          # Decode the base64-encoded ALB DNS name (encoded in the provision job
-          # to prevent GitHub's secret-masking from dropping the output value).
-          ALB_DNS="$(echo '${{ needs.provision.outputs.alb_dns_name_b64 }}' | base64 -d)"
+          # Re-read the ALB DNS directly from Terraform state in this job,
+          # avoiding inter-job output propagation which GitHub's secret masker
+          # suppresses when the value contains substrings that match secrets.
+          ALB_DNS="$(terraform output -raw alb_dns_name)"
           echo "Verifying http://$ALB_DNS/ ..."
           STATUS=$(curl -o /dev/null -s -w "%{http_code}" --max-time 30 --retry 10 --retry-delay 15 --retry-all-errors "http://$ALB_DNS/")
           echo "HTTP status: $STATUS"
@@ -155,8 +175,9 @@ jobs:
           echo "SUCCESS: Application is reachable and healthy."
 
       - name: Verify health endpoint
+        working-directory: terraform
         run: |-
-          ALB_DNS="$(echo '${{ needs.provision.outputs.alb_dns_name_b64 }}' | base64 -d)"
+          ALB_DNS="$(terraform output -raw alb_dns_name)"
           echo "Verifying http://$ALB_DNS/health ..."
           STATUS=$(curl -o /dev/null -s -w "%{http_code}" --max-time 30 --retry 5 --retry-delay 10 --retry-all-errors "http://$ALB_DNS/health")
           echo "HTTP status: $STATUS"
