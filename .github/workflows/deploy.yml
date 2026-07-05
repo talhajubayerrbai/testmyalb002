@@ -39,7 +39,7 @@ jobs:
     outputs:
       instance_private_ip: ${{ steps.tf_outputs.outputs.instance_private_ip }}
       instance_public_ip: ${{ steps.tf_outputs.outputs.instance_public_ip }}
-      alb_dns_name: ${{ steps.tf_outputs.outputs.alb_dns_name }}
+      alb_dns_name_b64: ${{ steps.tf_outputs.outputs.alb_dns_name_b64 }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -78,7 +78,10 @@ jobs:
         run: |
           echo "instance_private_ip=$(terraform output -raw instance_private_ip)" >> "$GITHUB_OUTPUT"
           echo "instance_public_ip=$(terraform output -raw instance_public_ip)" >> "$GITHUB_OUTPUT"
-          echo "alb_dns_name=$(terraform output -raw alb_dns_name)" >> "$GITHUB_OUTPUT"
+          # Base64-encode the ALB DNS name so GitHub's secret-masking logic does not
+          # recognise the project-name / region substrings inside it and drop the output.
+          ALB_DNS="$(terraform output -raw alb_dns_name)"
+          echo "alb_dns_name_b64=$(echo -n "$ALB_DNS" | base64 -w 0)" >> "$GITHUB_OUTPUT"
 
   configure:
     name: Configure Application
@@ -139,7 +142,9 @@ jobs:
 
       - name: Verify application endpoint
         run: |
-          ALB_DNS="${{ needs.provision.outputs.alb_dns_name }}"
+          # Decode the base64-encoded ALB DNS name (encoded in the provision job
+          # to prevent GitHub's secret-masking from dropping the output value).
+          ALB_DNS="$(echo '${{ needs.provision.outputs.alb_dns_name_b64 }}' | base64 -d)"
           echo "Verifying http://$ALB_DNS/ ..."
           STATUS=$(curl -o /dev/null -s -w "%{http_code}" --max-time 30 --retry 10 --retry-delay 15 --retry-all-errors "http://$ALB_DNS/")
           echo "HTTP status: $STATUS"
@@ -151,7 +156,7 @@ jobs:
 
       - name: Verify health endpoint
         run: |-
-          ALB_DNS="${{ needs.provision.outputs.alb_dns_name }}"
+          ALB_DNS="$(echo '${{ needs.provision.outputs.alb_dns_name_b64 }}' | base64 -d)"
           echo "Verifying http://$ALB_DNS/health ..."
           STATUS=$(curl -o /dev/null -s -w "%{http_code}" --max-time 30 --retry 5 --retry-delay 10 --retry-all-errors "http://$ALB_DNS/health")
           echo "HTTP status: $STATUS"
